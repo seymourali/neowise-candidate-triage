@@ -8,28 +8,77 @@
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
     button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #result { white-space: pre-wrap; margin-top: 1rem; }
+    .error { color: #8a2c2c; }
+    .topic { font-weight: 600; }
   </style>
 </head>
 <body>
   <h1>Входящие заявки</h1>
   <form>
     <label for="message">Текст заявки</label>
-    <textarea id="message" rows="4"></textarea>
+    <textarea id="message" rows="4" required></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+  <section id="result" aria-live="polite" aria-atomic="true"></section>
   <script type="module">
     const form = document.querySelector("form");
+    const message = document.querySelector("#message");
     const result = document.querySelector("#result");
+    let latestRequestId = 0;
+
+    function showManualReview() {
+      result.replaceChildren();
+      const notice = document.createElement("p");
+      notice.className = "error";
+      notice.textContent = "Не удалось надёжно разобрать заявку. Проверьте её вручную: определите тему и подготовьте ответ самостоятельно.";
+      result.append(notice);
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const reply = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
-      });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      const text = message.value.trim();
+      const requestId = ++latestRequestId;
+
+      // Do not leave a previous AI draft visible while a new request is running.
+      result.replaceChildren();
+      if (!text) {
+        const notice = document.createElement("p");
+        notice.className = "error";
+        notice.textContent = "Введите текст заявки для разбора.";
+        result.append(notice);
+        message.focus();
+        return;
+      }
+
+      try {
+        const reply = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await reply.json();
+
+        // Ignore late responses: only the most recently submitted request may update the UI.
+        if (requestId !== latestRequestId) return;
+
+        if (!reply.ok || data.status !== "ready" ||
+            !["delivery", "pricing", "other"].includes(data.topic) ||
+            typeof data.draft !== "string" || !data.draft.trim()) {
+          showManualReview();
+          return;
+        }
+
+        const topic = document.createElement("p");
+        topic.className = "topic";
+        topic.textContent = "Тема: " + data.topic;
+        const draft = document.createElement("p");
+        draft.textContent = "Черновик ответа: " + data.draft.trim();
+        result.append(topic, draft);
+      } catch {
+        if (requestId === latestRequestId) showManualReview();
+      }
     });
   </script>
 </body>
